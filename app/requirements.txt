@@ -1,5 +1,6 @@
 allure-pytest
 boto3
 moto
+pika
 pylint
 pytest

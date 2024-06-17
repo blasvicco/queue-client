@@ -1,38 +1,42 @@
 '''Driver for AWS SQS Broker'''
 
 # General imports
-import os
+import json
 
 # Lib imports
-import boto3
+from pika import BlockingConnection, URLParameters
 
 # App imports
 from . import Abstract
 
 class Instance(Abstract):
 	'''
-	A wrapper class around boto3's SQS resource.
+	A wrapper class around pika module
 
 	Please see the official documentation for more detailed information:
-	https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/sqs.html
+	https://pika.readthedocs.io/en/stable/
 	'''
 
 	def __init__(self, cfg): # pylint: disable=super-init-not-called
 		'''
-			All arguments are passed to the underlying boto3 Session. The list
-			of available parameters can be found here:
-			https://boto3.amazonaws.com/v1/documentation/api/latest/reference/core/session.html
+			Set the AMQP Pika connection
 		'''
-		credentials = cfg.get('credentials', {})
-		self.queue_cache = {}
 		self.cfg = cfg
-		self.session = boto3.Session(**{
-			'aws_access_key_id': credentials.get('key_id') or os.environ.get('SQS_POLLER_AWS_ACCESS_KEY_ID'),
-			'aws_secret_access_key': credentials.get('secret') or os.environ.get('SQS_POLLER_AWS_SECRET_ACCESS_KEY'),
-			'region_name': cfg.get('region') or os.environ.get('SQS_POLLER_REGION_NAME'),
-		})
-		self.client = boto3.client('sqs')
-		self.sqs = self.session.resource('sqs')
+		credentials = cfg.get('credentials', {})
+		user = f"{credentials.get('username')}:{credentials.get('password')}"
+		parameters = URLParameters(
+			f"amqp://{user}@{cfg.get('host')}:{cfg.get('port') or 5672}/"
+		)
+		self.connection = BlockingConnection(parameters=parameters)
+		self.channel = self.connection.channel()
+		self.channel.confirm_delivery()
+
+	def __del__(self):
+		'''
+			Close connections
+		'''
+		if hasattr(self, 'connection'):
+			self.connection.close()
 
 	def create_queue(self, queue_name, attributes=None, tags=None):
 		'''
@@ -42,10 +46,16 @@ class Instance(Abstract):
 			:param dict attributes: Attributes that will be set for the queue.
 			:param dict tags: Queue cost allocation tags that will be set for the queue.
 		'''
-		self.queue_cache[queue_name] = self.sqs.create_queue(
-			QueueName=queue_name,
-			Attributes={} if attributes is None else attributes,
-			tags={} if tags is None else tags,
+		if attributes:
+			raise ValueError('Argument attributes is not supported in this driver.')
+		if tags:
+			raise ValueError('Argument tags is not supported in this driver.')
+
+		self.channel.queue_declare(
+			queue=queue_name,
+			durable=True,
+			exclusive=False,
+			auto_delete=False,
 		)
 
 	def does_queue_exist(self, queue_name):
@@ -56,16 +66,9 @@ class Instance(Abstract):
 			:return: Whether a queue named `queue_name` exists.
 			:rtype: boolean
 		'''
-		try:
-			self.get_queue_by_name(queue_name, skip_cache=True)
-		except self.client.exceptions.ClientError as error:
-			if (getattr(error, 'response', {})).get('Error', {}).get('Code') in [
-				'AWS.SimpleQueueService.NonExistentQueue'
-			]:
-				return False
-			raise error
-		except self.client.exceptions.QueueDoesNotExist:
-			return False
+		# For AMQP there is no need to check for queue existence
+		# so we just create it if does not exist and then return true
+		self.create_queue(queue_name)
 		return True
 
 	def get_queue_by_name(self, queue_name, skip_cache=False):
@@ -74,28 +77,20 @@ class Instance(Abstract):
 
 			:param str queue_name: Name of the queue.
 			:param boolean skip_cache: Whether to skip the queue cache.
-			:raise QueueDoesNotExist: When the queue is not found, this exception is raised.
-			:return: A `Queue` object.
+			:raise RuntimeError: Because it is not supported by the driver.
+			:return: None.
 		'''
-		if skip_cache:
-			queue = self.sqs.get_queue_by_name(QueueName=queue_name)
-			self.queue_cache[queue_name] = queue
-			return queue
-		return self.queue_cache.setdefault(
-			queue_name,
-			self.sqs.get_queue_by_name(QueueName=queue_name),
-		)
+		# For AMQP there is no need to check for queue existence
+		raise RuntimeError('AMQP driver does not implement get_queue_by_name.')
 
 	def purge_queue(self, queue_name):
 		'''
 			Delete all messages from a queue named `queue_name`.
 
 			:param str queue_name: Name of the queue.
-			:raise QueueDoesNotExist: When the queue is not found, this exception is raised.
 			:rtype: None
 		'''
-		queue = self.get_queue_by_name(queue_name)
-		return queue.purge()
+		return self.channel.queue_purge(queue_name)
 
 	def receive_message_from_queue(self, queue_name, **receive_kwargs):
 		'''
@@ -105,15 +100,17 @@ class Instance(Abstract):
 
 			:param str queue_name: Name of the queue.
 			:param receive_kwargs: Arguments that will be passed to the underlying `receive_messages` call.
-			:raise QueueDoesNotExist: When the queue is not found, this exception is raised.
 			:return: `Message` object or None, when no message was received.
 			:rtype: Message, None
 		'''
-		messages = self.receive_messages_from_queue(queue_name, **receive_kwargs)
-		try:
-			return messages[0]
-		except IndexError:
-			return None
+		if receive_kwargs:
+			raise ValueError('Argument receive_kwargs is not supported in this driver.')
+
+		method_frame, _, body = self.channel.basic_get(queue_name)
+		if method_frame:
+			self.channel.basic_ack(method_frame.delivery_tag)
+			return json.loads(body)
+		return None
 
 	def receive_messages_from_queue(self, queue_name, max_count=10, **receive_kwargs):
 		'''
@@ -122,13 +119,21 @@ class Instance(Abstract):
 			:param str queue_name: Name of the queue.
 			:param int max_count: Maximum number of messages to receive (10 at most).
 			:param receive_kwargs: Arguments that will be passed to the underlying `receive_messages` call.
-			:raise QueueDoesNotExist: When the queue is not found, this exception is raised.
 			:return: List of `Message` objects.
 			:rtype: list[Message`]
 		'''
-		queue = self.get_queue_by_name(queue_name)
-		receive_kwargs['MaxNumberOfMessages'] = max_count
-		return queue.receive_messages(**receive_kwargs)
+		if receive_kwargs:
+			raise ValueError('Argument receive_kwargs is not supported in this driver.')
+
+		messages = []
+		while True:
+			message = self.receive_message_from_queue(queue_name)
+			if message:
+				messages.append(message)
+				if len(messages) < max_count:
+					continue
+			break
+		return messages
 
 	def send_message_to_queue(self, queue_name, message_body, **send_kwargs):
 		'''
@@ -137,10 +142,16 @@ class Instance(Abstract):
 			:param str queue_name: Name of the queue.
 			:param str message_body: The body of the message that will be sent.
 			:param send_kwargs: Arguments that will be passed to the underlying `send_message` call.
-			:raise QueueDoesNotExist: When the queue is not found, this exception is raised.
-			:return: The API response.
+			:return: the message body.
 			:rtype: dict
 		'''
-		queue = self.get_queue_by_name(queue_name)
-		send_kwargs['MessageBody'] = message_body
-		return queue.send_message(**send_kwargs)
+		if send_kwargs:
+			raise ValueError('Argument send_kwargs is not supported in this driver.')
+
+		self.channel.basic_publish(
+			'',
+			routing_key=queue_name,
+			body=json.dumps(message_body),
+			mandatory=True,
+		)
+		return message_body

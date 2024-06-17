@@ -7,33 +7,39 @@ from allure import step
 class TestCreateQueue:
 	'''Tests for queue creation'''
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_new_queue(self, sqs, qclient):
 		'''Test create new queue'''
 		with step('Arrange: initialize queue name'):
 			queue_name = 'test-queue'
 
 		with step(f'Act: create queue {queue_name}'):
-			created_queue = qclient.create_queue(queue_name)
+			qclient.create_queue(queue_name)
+			created_queue = qclient.queue_cache[queue_name]
 
 		with step('Assert: queue creation succeded'):
 			retrieved_queue = sqs.get_queue_by_name(QueueName=queue_name)
 			assert created_queue.url == retrieved_queue.url
 
-	def test_existing_queue(self, sqs, qclient):
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
+	def test_existing_queue(self, qclient):
 		'''Test create on existing queue'''
 		with step('Arrange: initialize queue name'):
 			queue_name = 'test-queue'
 
-		with step(f'Act: create queue {queue_name}'):
-			created_queue = qclient.create_queue(queue_name)
+		with step(f'Act: create queue {queue_name} and recreate'):
+			qclient.create_queue(queue_name)
+			created_queue = qclient.queue_cache[queue_name]
+			qclient.create_queue(queue_name)
+			recreated_queue = qclient.queue_cache[queue_name]
 
 		with step('Assert: queue creation on existing on succeded'):
-			recreated_queue = qclient.create_queue(queue_name)
 			assert created_queue.url == recreated_queue.url
 
 class TestGetQueueByName:
 	'''Tests get queue by name'''
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_get_queue_by_name_success(self, sqs, qclient):
 		'''Test get valid queue'''
 		with step('Arrange: initialize queue name'):
@@ -48,6 +54,7 @@ class TestGetQueueByName:
 		with step('Assert: getting queue by name succeded'):
 			assert retrieved_queue.url == created_queue.url
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_get_queue_by_name_fail(self, qclient):
 		'''Test get invalid queue'''
 		with step('Assert: getting error when queue name does not exist'):
@@ -61,6 +68,7 @@ class TestGetQueueByName:
 class TestDoesQueueExist:
 	'''Tests check if queue exists'''
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_existing_queue(self, sqs, qclient):
 		'''Test queue exist'''
 		with step('Arrange: initialize queue name'):
@@ -72,6 +80,7 @@ class TestDoesQueueExist:
 		with step('Assert: queue exist succeded'):
 			assert qclient.does_queue_exist(queue_name)
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_non_existing_queue(self, qclient):
 		'''Test queue does not exist'''
 		with step('Assert: queue does not exist succeded'):
@@ -80,6 +89,7 @@ class TestDoesQueueExist:
 class TestSendMessageToQueue:
 	'''Tests send message'''
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_success(self, qclient, queue_without_messages):
 		'''Test send message'''
 		with step('Arrange: get queue with no message'):
@@ -94,6 +104,7 @@ class TestSendMessageToQueue:
 			assert retrieved_message.message_id == message_id
 			assert retrieved_message.queue_url == queue.url
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_non_existing_queue(self, qclient):
 		'''Test send message fail because no queue'''
 		with step('Arrange: initialize queue name'):
@@ -110,10 +121,11 @@ class TestSendMessageToQueue:
 class TestReceiveMessagesFromQueue:
 	'''Tests receive message'''
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_without_messages(self, qclient, queue_without_messages):
 		'''Test request message from empty queue'''
 		with step('Arrange: get queue with no message'):
-			queue, queue_name = queue_without_messages
+			_, queue_name = queue_without_messages
 
 		with step('Act: get message'):
 			message = qclient.receive_message_from_queue(queue_name)
@@ -123,41 +135,45 @@ class TestReceiveMessagesFromQueue:
 			assert message is None
 			assert not messages
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_one_message(self, qclient, queue_with_one_message):
 		'''Test request message from queue with just one'''
 		with step('Arrange: get queue with one message'):
-			queue, queue_name, message_id = queue_with_one_message
+			queue_name, message = queue_with_one_message
 
 		with step('Act: get message'):
-			message = qclient.receive_message_from_queue(queue_name, VisibilityTimeout=0)
+			received_message = qclient.receive_message_from_queue(queue_name, VisibilityTimeout=0)
 
 		with step('Assert: only one message received'):
-			assert message.message_id == message_id
-			messages = qclient.receive_messages_from_queue(queue_name)
-			assert messages[0].message_id == message_id
-			assert len(messages) == 1
+			assert received_message.message_id == message.get('MessageId')
+			received_messages = qclient.receive_messages_from_queue(queue_name)
+			assert received_messages[0].message_id == message.get('MessageId')
+			assert len(received_messages) == 1
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_multiple_messages(self, qclient, queue_with_messages):
 		'''Test request messages from queue with more than one'''
 		with step('Arrange: get queue with more than one messages'):
-			queue, queue_name, message_ids = queue_with_messages
+			queue_name, messages = queue_with_messages
+			message_ids = [message.get('MessageId') for message in messages]
 
 		with step('Act: get messages'):
-			messages = qclient.receive_messages_from_queue(queue_name, max_count=10)
+			received_messages = qclient.receive_messages_from_queue(queue_name, max_count=10)
 
 		with step('Assert: multiple messages received'):
-			for message in messages:
-				assert message.message_id in message_ids
-			message = qclient.receive_message_from_queue(queue_name)
-			assert message.message_id in message_ids
+			for received_message in received_messages:
+				assert received_message.message_id in message_ids
+			receive_message = qclient.receive_message_from_queue(queue_name)
+			assert receive_message.message_id in message_ids
 
 class TestPurgeQueue:
 	'''Tests purge queue'''
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_empty_queue(self, qclient, queue_without_messages):
 		'''Test purge empty queue'''
 		with step('Arrange: get queue with no message'):
-			queue, queue_name = queue_without_messages
+			_, queue_name = queue_without_messages
 
 		with step('Act: purge queue'):
 			qclient.purge_queue(queue_name)
@@ -166,10 +182,11 @@ class TestPurgeQueue:
 			messages = qclient.receive_messages_from_queue(queue_name)
 			assert not messages
 
+	@pytest.mark.parametrize('qclient', [{'driver': 'aws_sqs'}], indirect=True)
 	def test_queue_with_messages(self, qclient, queue_with_messages):
 		'''Test purge queue with messages'''
 		with step('Arrange: get queue with more than one messages'):
-			queue, queue_name, message_ids = queue_with_messages
+			queue_name, __ = queue_with_messages
 
 		with step('Act: purge queue'):
 			qclient.purge_queue(queue_name)
@@ -177,4 +194,3 @@ class TestPurgeQueue:
 		with step('Assert: queue purged'):
 			messages = qclient.receive_messages_from_queue(queue_name)
 			assert not messages
-

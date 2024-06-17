@@ -8,3 +8,14 @@ services:
     volumes:
       - $HOME/.aws:/root/.aws:ro
       - ./app:/home/app
+
+  broker:
+    container_name: broker
+    environment:
+      - RABBITMQ_DEFAULT_USER=my-broker
+      - RABBITMQ_DEFAULT_PASS=my-pass
+    image: 'rabbitmq:3.13.3-management-alpine'
+    ports:
+      - "15672:15672"
+      - "15692:15692"
+
