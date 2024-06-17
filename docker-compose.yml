@@ -1,0 +1,8 @@
+services:
+  queue-client:
+    build: .
+    command: 'tail -f /dev/null'
+    container_name: queue-client
+    volumes:
+      - $HOME/.aws:/home/app/.aws:ro
+      - ./app:/home/app
