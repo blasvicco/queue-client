@@ -3,6 +3,8 @@ services:
     build: .
     command: 'tail -f /dev/null'
     container_name: queue-client
+    environment:
+      - PYTHONPATH="$${PYTHONPATH}:/home/app"
     volumes:
       - $HOME/.aws:/root/.aws:ro
       - ./app:/home/app
