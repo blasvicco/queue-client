@@ -4,5 +4,5 @@ services:
     command: 'tail -f /dev/null'
     container_name: queue-client
     volumes:
-      - $HOME/.aws:/home/app/.aws:ro
+      - $HOME/.aws:/root/.aws:ro
       - ./app:/home/app
