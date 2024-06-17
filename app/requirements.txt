@@ -1,3 +1,5 @@
+allure-pytest
 boto3
+moto
 pylint
 pytest

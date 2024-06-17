@@ -1,6 +1,6 @@
-FROM python:3.13.0b1-alpine3.20
+FROM python:3.11.9-alpine3.20
 
-ENV ESSENTIAL_PACKAGES="" \
+ENV ESSENTIAL_PACKAGES="gcc libc-dev libffi-dev linux-headers" \
     UTILITY_PACKAGES="mlocate vim"
 
 RUN apk update && \
